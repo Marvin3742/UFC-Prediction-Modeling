@@ -136,13 +136,27 @@ def clean_ufc_fights_csv(ufc_fights_csv):
     return new_df
 
 
-# event_name,fight_date,location,weight_class,winner,win_method,detail,round,end_time,referee
-# UFC 2: No Way Out,"March 11, 1994","Denver, Colorado, USA",Open Weight Bout,Scott Morris,Submission,Guillotine Choke From Mount,1,0:20,John McCarthy
+def clean_rounds(rounds_csv):
+    data = pd.read_csv(rounds_csv)
+    cols = ["sig_str", "total_str", "td", "head", "body", "leg", "distance", "clinch", "ground"]
+    
+    for col in cols:
+        extracted = data[col].str.extract(r'(\d+)\s+of\s+(\d+)').astype(int)
+        data[f"{col}_landed"] = extracted[0]
+        data[f"{col}_attempted"] = extracted[1]
+    new_data = data.drop(columns=cols)
+    
+    return new_data
 
-new_df = clean_fighter_csv("../raw/fighters.csv")
-new_df = split_record_columns(new_df)
-new_df = new_df.drop(columns=["SLpM", "Str_Acc", "SApM", "Str_def", "TD_Avg", "TD_Acc", "TD_Def", "Sub_avg"])
-new_df.to_csv("../cleaned/cleaned_fighters.csv", index=False)
 
-new_df = clean_ufc_fights_csv("../raw/ufc_fights.csv")
-new_df.to_csv("../cleaned/cleaned_ufc_fights.csv", index=False)
+
+# new_df = clean_fighter_csv("../raw/fighters.csv")
+# new_df = split_record_columns(new_df)
+# new_df = new_df.drop(columns=["SLpM", "Str_Acc", "SApM", "Str_def", "TD_Avg", "TD_Acc", "TD_Def", "Sub_avg"])
+# new_df.to_csv("../cleaned/cleaned_fighters.csv", index=False)
+
+# new_df = clean_ufc_fights_csv("../raw/ufc_fights.csv")
+# new_df.to_csv("../cleaned/cleaned_ufc_fights.csv", index=False)
+
+new_df = clean_rounds("../raw/rounds.csv")
+new_df.to_csv('../cleaned/cleaned_rounds.csv', index=False)

@@ -226,14 +226,133 @@ def fighter_fights(url, csv):
             fight_id += 1
     return rows
 
+def rows_from_fight(features, fight_id, fighter_a_id, fighter_b_id):
+    rows = []
+    rounds = 0
+    if len(features) != 0:
+        rounds = (len(features) - 38) // 38
+
+    for round in range(rounds):
+        kd_idx = 22 + round * 20
+        sig_str_idx = 24 + (round*20)
+        total_str_idx = 28 + round * 20
+        td_idx = 30 + round * 20
+        sub_att_idx = 34 + round * 20
+        rev_idx = 36 + round * 20
+        ctr_time_idx = 38 + round * 20
+        head_idx = (44 + rounds * 20) + round * 18
+        body_idx = (46 + rounds * 20) + round * 18
+        body_idx = (46 + rounds * 20) + round * 18
+        leg_idx = (48 + rounds * 20) + round * 18
+        distance_idx = (50 + rounds * 20) + round * 18
+        clinch_idx = (52 + rounds * 20) + round * 18
+        ground_idx = (54 + rounds * 20) + round * 18
+        rows.append({
+            "fight_id": fight_id,
+            "fighter_id": fighter_a_id,
+            "round": round+1,
+            "kd": features[kd_idx],
+            "sig_str": features[sig_str_idx],
+            "total_str": features[total_str_idx],
+            "td": features[td_idx],
+            "sub_att": features[sub_att_idx],
+            "reversals": features[rev_idx],
+            "ctr_time": features[ctr_time_idx],
+            "head": features[head_idx],
+            "body": features[body_idx],
+            "leg": features[leg_idx],
+            "distance": features[distance_idx],
+            "clinch": features[clinch_idx],
+            "ground": features[ground_idx]
+            })
+        
+    for round in range(rounds):
+        kd_idx = 23 + round * 20
+        sig_str_idx = 25 + (round*20)
+        total_str_idx = 29 + round * 20
+        td_idx = 31 + round * 20
+        sub_att_idx = 35 + round * 20
+        rev_idx = 37 + round * 20
+        ctr_time_idx = 39 + round * 20
+        head_idx = (45 + rounds * 20) + round * 18
+        body_idx = (47 + rounds * 20) + round * 18
+        leg_idx = (49 + rounds * 20) + round * 18
+        distance_idx = (51 + rounds * 20) + round * 18
+        clinch_idx = (53 + rounds * 20) + round * 18
+        ground_idx = (55 + rounds * 20) + round * 18
+        rows.append({
+            "fight_id": fight_id,
+            "fighter_id": fighter_b_id,
+            "round": round+1,
+            "kd": features[kd_idx],
+            "sig_str": features[sig_str_idx],
+            "total_str": features[total_str_idx],
+            "td": features[td_idx],
+            "sub_att": features[sub_att_idx],
+            "reversals": features[rev_idx],
+            "ctr_time": features[ctr_time_idx],
+            "head": features[head_idx],
+            "body": features[body_idx],
+            "leg": features[leg_idx],
+            "distance": features[distance_idx],
+            "clinch": features[clinch_idx],
+            "ground": features[ground_idx]
+            })
+    return rows
 
 
+def fight_rounds(url, csv):
+    rows = []
+    fighter_df = pd.read_csv(csv)
+    fighter_df.index = fighter_df.index + 1 
+    duplicates = list(fighter_df[fighter_df['fighter_name'].duplicated()]['fighter_name'])
+    response = requests.get(url)
+    soup = BeautifulSoup(response.content, "html.parser")
+    table_rows = soup.find_all("tr", class_ = "b-statistics__table-row")
+    card_links = []
+    for i in range(2, len(table_rows)):
+        link = table_rows[i].find("a").get('href')
+        card_links.append(link)
+    fight_id = 1
+    for i in range(len(card_links)-1, -1, -1):
+        response = requests.get(card_links[i])
+        print(f"PROCESSING CARD {i}")
+        soup = BeautifulSoup(response.content, "html.parser")
+        table_rows = soup.find_all("tr", class_ = "b-fight-details__table-row b-fight-details__table-row__hover js-fight-details-click")
+        fight_links = []
+        for j in range(len(table_rows)):
+            link = table_rows[j].get("data-link")
+            fight_links.append(link)
+        for j in range(len(fight_links)-1, -1, -1):
+            response = requests.get(fight_links[j])
+            soup = BeautifulSoup(response.content, "html.parser")
+            fighter_names = soup.find_all('a', class_='b-link b-fight-details__person-link')
+            fighter_name_a = fighter_names[0].get_text(strip=True)
+            fighter_name_b = fighter_names[1].get_text(strip=True)
 
+            if fighter_name_a in duplicates:
+                fighter_link = fighter_names[0].get('href')
+                fighter_a_id = get_duplicate_fighter_id(fighter_name_a, fighter_link, fighter_df)
+            else:
+                fighter_a_id = fighter_df[fighter_df['fighter_name'] == fighter_name_a].index[0]
 
- 
+            if fighter_name_b in duplicates:
+                fighter_link = fighter_names[1].get('href')
+                fighter_b_id = get_duplicate_fighter_id(fighter_name_b, fighter_link, fighter_df)
+            else:
+                fighter_b_id = fighter_df[fighter_df['fighter_name'] == fighter_name_b].index[0]
+            
+            data = soup.find_all('p', class_ = "b-fight-details__table-text")
+            features = []
+            for point in data:
+                features.append(point.get_text(strip=True))
 
+            new_rows = rows_from_fight(features, fight_id, fighter_a_id, fighter_b_id)
+            rows = rows + new_rows
+            fight_id += 1
+    return rows
 
-
+            
 # # -----------------------------------------------
 # # EXAMPLE USAGE
 # # -----------------------------------------------
@@ -252,12 +371,15 @@ def fighter_fights(url, csv):
 # fight_data.index.name = "fight_id"
 # fight_data.to_csv(save_location, index=True)
 
-csv = "../raw/fighters.csv"
-rows = fighter_fights(url, csv)
-save_location = "fighter_fights.csv"
-data = pd.DataFrame(rows)
-data.to_csv(save_location, index=False)
+# csv = "../raw/fighters.csv"
+# rows = fighter_fights(url, csv)
+# save_location = "fighter_fights.csv"
+# data = pd.DataFrame(rows)
+# data.to_csv(save_location, index=False)
 
 
 
 # TO-DO keep index when making fighter and fight csvs
+# rows = fight_rounds(url, "../raw/fighters.csv")
+# data = pd.DataFrame(rows)
+# data.to_csv("rounds.csv", index=False)
