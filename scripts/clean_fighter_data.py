@@ -8,6 +8,10 @@ def height_to_inches(height_str):
     feet, inches = map(int, match)
     return feet * 12 + inches
 
+def mmss_to_hhmmss(t):
+    mins, secs = t.strip().split(":")
+    return f"00:{int(mins):02}:{int(secs):02}"
+
 def split_record_columns(df):
     record_split = df['fighter_record'].str.split('-', expand=True)
 
@@ -59,6 +63,16 @@ def clean_data_point(data, data_type):
                 return "N/A"
             else:
                 return data
+        case "ctr_time":
+            if data == "--" or pd.isna(data):
+                return "42:42:42"
+            else:
+                return mmss_to_hhmmss(data)
+        case "time":
+            if data == "--" or pd.isna(data):
+                return "42:42:42"
+            else:
+                return mmss_to_hhmmss(data)
         case _:
             return None
         
@@ -87,18 +101,6 @@ def clean_fighter_csv(fighter_csv):
 
     return fighter_df
 
-            # rows.append({
-            #     "event_name": event_name,
-            #     "fight_date": fight_date,
-            #     "location": location,          --- split into city, district, country
-            #     "weight_class": weight_class,  --- extract weight class and championship flag
-            #     "winner": winner,
-            #     "win_method": win_method, 
-            #     "detail": detail,              --- handle missing values
-            #     "round": round,
-            #     "end_time": end_time,
-            #     "referee": referee
-            #     })
 
 def split_location(df):
     location_split = (
@@ -127,6 +129,10 @@ def clean_ufc_fights_csv(ufc_fights_csv):
         lambda x: clean_data_point(x, "detail")
     )
 
+    new_df['end_time'] = new_df['end_time'].apply(
+        lambda x: clean_data_point(x, "time")
+    )
+
     new_df['title_bout'] = new_df['weight_class'].str.contains(
     r'title|championship',
     case=False,
@@ -145,18 +151,22 @@ def clean_rounds(rounds_csv):
         data[f"{col}_landed"] = extracted[0]
         data[f"{col}_attempted"] = extracted[1]
     new_data = data.drop(columns=cols)
+
+    new_data['ctr_time'] = new_data['ctr_time'].apply(
+        lambda x: clean_data_point(x, "ctr_time")
+    )
     
     return new_data
 
 
 
-# new_df = clean_fighter_csv("../raw/fighters.csv")
-# new_df = split_record_columns(new_df)
-# new_df = new_df.drop(columns=["SLpM", "Str_Acc", "SApM", "Str_def", "TD_Avg", "TD_Acc", "TD_Def", "Sub_avg"])
-# new_df.to_csv("../cleaned/cleaned_fighters.csv", index=False)
+new_df = clean_fighter_csv("../raw/fighters.csv")
+new_df = split_record_columns(new_df)
+new_df = new_df.drop(columns=["SLpM", "Str_Acc", "SApM", "Str_def", "TD_Avg", "TD_Acc", "TD_Def", "Sub_avg"])
+new_df.to_csv("../cleaned/cleaned_fighters.csv", index=False)
 
-# new_df = clean_ufc_fights_csv("../raw/ufc_fights.csv")
-# new_df.to_csv("../cleaned/cleaned_ufc_fights.csv", index=False)
+new_df = clean_ufc_fights_csv("../raw/ufc_fights.csv")
+new_df.to_csv("../cleaned/cleaned_ufc_fights.csv", index=False)
 
 new_df = clean_rounds("../raw/rounds.csv")
 new_df.to_csv('../cleaned/cleaned_rounds.csv', index=False)

@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
+import sys 
 
 all_urls = ["http://ufcstats.com/statistics/fighters?char=a&page=all",
             "http://ufcstats.com/statistics/fighters?char=b&page=all",
@@ -171,11 +172,11 @@ def get_duplicate_fighter_id(fighter_name, url, df):
     for j in range(14):
         label = info[j].find('i')
         label.extract()
-        height = info[0].get_text(strip=True)
-        weight = info[1].get_text(strip=True)
-        reach = info[2].get_text(strip=True)
-        stance = info[3].get_text(strip=True) 
-        dob = info[4].get_text(strip=True)
+    height = info[0].get_text(strip=True)
+    weight = info[1].get_text(strip=True)
+    reach = info[2].get_text(strip=True)
+    stance = info[3].get_text(strip=True) 
+    dob = info[4].get_text(strip=True)
     fighter_id = df[(df['fighter_name'] == fighter_name) &
                     (df['fighter_record'] == record) &
                     (df['height'] == height) & 
@@ -183,7 +184,19 @@ def get_duplicate_fighter_id(fighter_name, url, df):
                     (df['reach'] == reach) &
                     (df['stance'] == stance) &
                     (df['dob'] == dob)].index
-    return fighter_id[0]
+    try:
+        fighter_id = fighter_id[0]
+    except IndexError:
+        print(f'Fighter: {fighter_name} not found in data frame')
+        print(f'URL: {url}')
+        print(f'fighter_record: {record}')
+        print(f'height: {height}')
+        print(f'weight: {weight}')
+        print(f'reach: {reach}')
+        print(f'stance: {stance}')
+        print(f'dob: {dob}')
+        sys.exit(1)
+    return fighter_id
 
 # This algorithm parses through the ufc fight page in the same way that scrape_ufc_fights does. This way the fight_id will
 # just be the iteration the algorithm is in. At each fight, the algorithm will collect the names of each fighter. The algo will then check if 
@@ -327,17 +340,28 @@ def fight_rounds(url, csv):
             response = requests.get(fight_links[j])
             soup = BeautifulSoup(response.content, "html.parser")
             fighter_names = soup.find_all('a', class_='b-link b-fight-details__person-link')
-            fighter_name_a = fighter_names[0].get_text(strip=True)
-            fighter_name_b = fighter_names[1].get_text(strip=True)
+            try:
+                fighter_name_a = fighter_names[0].get_text(strip=True)
+            except IndexError:
+                print(f'Fighter: {fighter_name_a} not found')
+                sys.exit(1)
+
+            try:
+                fighter_name_b = fighter_names[1].get_text(strip=True)
+            except IndexError:
+                print(f'Fighter: {fighter_name_b} not found')
+                sys.exit(1)
 
             if fighter_name_a in duplicates:
                 fighter_link = fighter_names[0].get('href')
+                print(f'Fighter A {fighter_name_a} is a duplicate, visiting url: {fighter_link} to discern fighter_id')
                 fighter_a_id = get_duplicate_fighter_id(fighter_name_a, fighter_link, fighter_df)
             else:
                 fighter_a_id = fighter_df[fighter_df['fighter_name'] == fighter_name_a].index[0]
 
             if fighter_name_b in duplicates:
                 fighter_link = fighter_names[1].get('href')
+                print(f'Fighter B {fighter_name_b} is a duplicate, visiting url: {fighter_link} to discern fighter_id')
                 fighter_b_id = get_duplicate_fighter_id(fighter_name_b, fighter_link, fighter_df)
             else:
                 fighter_b_id = fighter_df[fighter_df['fighter_name'] == fighter_name_b].index[0]
@@ -362,7 +386,6 @@ def fight_rounds(url, csv):
 # fighter_data.index = fighter_data.index + 1
 # fighter_data.index.name = "fighter_id"
 # fighter_data.to_csv(save_location, index=True)
-# print(f"CSV saved succesfully to {save_location} !")
 
 # save_location = "ufc_fights.csv"
 # rows = scrape_ufc_fights(url)
@@ -371,15 +394,12 @@ def fight_rounds(url, csv):
 # fight_data.index.name = "fight_id"
 # fight_data.to_csv(save_location, index=True)
 
-# csv = "../raw/fighters.csv"
+# csv = "fighters.csv"
 # rows = fighter_fights(url, csv)
 # save_location = "fighter_fights.csv"
 # data = pd.DataFrame(rows)
 # data.to_csv(save_location, index=False)
 
-
-
-# TO-DO keep index when making fighter and fight csvs
-# rows = fight_rounds(url, "../raw/fighters.csv")
-# data = pd.DataFrame(rows)
-# data.to_csv("rounds.csv", index=False)
+rows = fight_rounds(url, "fighters.csv")
+data = pd.DataFrame(rows)
+data.to_csv("rounds.csv", index=False)
