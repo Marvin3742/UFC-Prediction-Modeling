@@ -6,7 +6,7 @@ def write_to_fighters(csv_file):
   conn = psycopg2.connect(
       dbname="ufc_fighter_db",
       user="postgres",
-      password="347824Mg",
+      password="3742",
       host="localhost",
       port=5432
   )
@@ -31,7 +31,7 @@ def write_to_fights(csv_file):
   conn = psycopg2.connect(
       dbname="ufc_fighter_db",
       user="postgres",
-      password="347824Mg",
+      password="3742",
       host="localhost",
       port=5432
   )
@@ -57,7 +57,7 @@ def write_to_fighter_fights(csv_file):
   conn = psycopg2.connect(
     dbname='ufc_fighter_db',
     user='postgres',
-    password='347824Mg',
+    password='3742',
     host='localhost',
     port=5432
   )
@@ -81,7 +81,7 @@ def write_to_rounds(csv_file):
   conn = psycopg2.connect(
     dbname='ufc_fighter_db',
     user='postgres',
-    password='347824Mg',
+    password='3742',
     host='localhost',
     port=5432
   )
