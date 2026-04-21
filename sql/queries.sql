@@ -1,176 +1,231 @@
-WITH prior_fight_stats AS (
+-- Feature view for ML model training.
+-- Each row is one fight. Rolling stats (slpm, str_acc, etc.) reflect only
+-- fights with a lower fight_id than the current fight (retroactive).
+-- fight_id is sequential, so this correctly handles same-day fights.
+-- Fighters with no prior history have NULL for all rolling stats.
+--
+-- f1 = the fighter with the lower fighter_id in the pairing (arbitrary but consistent).
+-- f2 = the fighter with the higher fighter_id.
+-- Use the `winner` column to derive the target label.
+--
+-- This is a regular view. If query performance is a concern after the database
+-- grows, replace CREATE VIEW with CREATE MATERIALIZED VIEW and run
+-- REFRESH MATERIALIZED VIEW fight_features after each data load.
+
+DROP VIEW IF EXISTS fight_features;
+CREATE VIEW fight_features AS
+WITH fight_durations AS (
     SELECT
-        r.fighter_id,
-        r.fight_id,
-        SUM(r.sig_strikes_landed)    AS ssl,
-        SUM(r.sig_strikes_attempted) AS ssa,
-        SUM(r.takedowns_landed)      AS tdl,
-        SUM(r.takedowns_attempted)   AS tda,
-        SUM(r.submissions_attempted) AS suba,
-        SUM(
-            CASE
-                WHEN f.round = r.round_number
-                THEN EXTRACT(EPOCH FROM f.end_time) / 60.0
-                ELSE 5.0
-            END
-        ) AS fight_minutes
-    FROM rounds r
-    JOIN fights f ON r.fight_id = f.fight_id
-    GROUP BY r.fighter_id, r.fight_id
-	ORDER BY r.fight_id
+        fight_id,
+        fight_date,
+        ((round - 1) * 300.0 + EXTRACT(EPOCH FROM end_time)) / 60.0 AS duration_minutes
+    FROM fights
 ),
 
-opponent_fight_stats AS (
+-- Aggregate round-level stats to the fight level for each fighter
+fighter_fight_totals AS (
     SELECT
-        ff_self.fighter_id,
-        ff_self.fight_id,
-        SUM(r.sig_strikes_landed)    AS opp_ssl,
-        SUM(r.sig_strikes_attempted) AS opp_ssa,
-        SUM(r.takedowns_landed)      AS opp_tdl,
-        SUM(r.takedowns_attempted)   AS opp_tda
-    FROM fighter_fights ff_self
-    JOIN fighter_fights ff_opp ON ff_opp.fight_id = ff_self.fight_id
-                               AND ff_opp.fighter_id <> ff_self.fighter_id
-    JOIN rounds r ON r.fighter_id = ff_opp.fighter_id
-                 AND r.fight_id = ff_opp.fight_id
-    GROUP BY ff_self.fighter_id, ff_self.fight_id
-	order by ff_self.fight_id
+        fighter_id,
+        fight_id,
+        SUM(sig_strikes_landed)    AS sig_landed,
+        SUM(sig_strikes_attempted) AS sig_attempted,
+        SUM(takedowns_landed)      AS td_landed,
+        SUM(takedowns_attempted)   AS td_attempted,
+        SUM(submissions_attempted) AS subs_attempted
+    FROM rounds
+    GROUP BY fighter_id, fight_id
 ),
-fighter_temp AS (
-    SELECT ff.fighter_id, current_f.*, pfs.ssl, pfs.ssa, pfs.tdl, pfs.tda, pfs.suba, pfs.fight_minutes
-    FROM fighter_fights ff
-    JOIN fights current_f  ON ff.fight_id = current_f.fight_id
-    JOIN prior_fight_stats pfs ON pfs.fighter_id = ff.fighter_id and pfs.fight_id = ff.fight_id
-)
--- select * from fighter_temp
-,
 
-fighter_prior_stats AS (
-	SELECT 
-		fighter_id, fight_id, 
-		SUM(ssl) OVER (
-			PARTITION BY fighter_id
-			ORDER BY fight_id
-			ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-		) AS prev_strikes_landed,
-
-		SUM(ssa) OVER(
-			PARTITION BY fighter_id
-			ORDER BY fight_id
-			ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-			) AS prev_strikes_absorbed,
-			
-		SUM(tdl) OVER (
-			PARTITION BY fighter_id
-			ORDER BY fight_id
-			ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-		) AS prev_takedowns_landed,
-
-		SUM(tda) OVER(
-			PARTITION BY fighter_id
-			ORDER BY fight_id
-			ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-			) AS prev_takedowns_attempted,
-			
-		SUM(suba) OVER (
-			PARTITION BY fighter_id
-			ORDER BY fight_id
-			ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-		) AS prev_submissions_attempted,
-
-		SUM(fight_minutes) OVER(
-			PARTITION BY fighter_id
-			ORDER BY fight_id
-			ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-			) AS prev_total_minutes
-			
-	FROM fighter_temp
-	ORDER BY fight_id
-)
-select * from fighter_prior_stats
-group by fighter_prior_stats.fighter_id
-,
-opponent_prior_stats AS (
-	select 
-	fighter_id, 
-	current_fight_id
-	-- prev_ssl, prev_ssa, prev_tdl, prev_tda, prev_suba, prev_total_minutes
-	from(
-	    SELECT *
-	    FROM fighter_fights ff
-	    JOIN fights current_f  ON ff.fight_id = current_f.fight_id
-	    JOIN opponent_fight_stats ofs ON ofs.fighter_id = ff.fighter_id and ofs.fight_id = ff.fight_id
-		)
-)
-select * from opponent
-,
-
-fighter_stats AS (
+-- Per (fighter, fight): own totals + opponent totals + fight duration.
+-- This is the source used when computing retroactive rolling averages.
+-- Fights with missing round data are excluded (no rows = not counted in history).
+fight_data AS (
     SELECT
-        fps.fighter_id,
-        fps.current_fight_id                                                           AS fight_id,
-        ROUND((fps.ssl::NUMERIC  / NULLIF(fps.total_minutes, 0)), 3)                  AS slpm,
-        ROUND((fps.ssl::NUMERIC  / NULLIF(fps.ssa::NUMERIC, 0)), 3)                   AS str_acc,
-        ROUND((ops.opp_ssl::NUMERIC / NULLIF(fps.total_minutes, 0)), 3)               AS sapm,
-        ROUND((1 - ops.opp_ssl::NUMERIC / NULLIF(ops.opp_ssa::NUMERIC, 0)), 3)        AS str_def,
-        ROUND((fps.tdl::NUMERIC  / NULLIF(fps.total_minutes, 0) * 15), 3)             AS td_avg,
-        ROUND((fps.tdl::NUMERIC  / NULLIF(fps.tda::NUMERIC, 0)), 3)                   AS td_acc,
-        ROUND((1 - ops.opp_tdl::NUMERIC / NULLIF(ops.opp_tda::NUMERIC, 0)), 3)        AS td_def,
-        ROUND((fps.suba::NUMERIC / NULLIF(fps.total_minutes, 0) * 15), 3)             AS sub_avg
-    FROM fighter_prior_stats fps
-    LEFT JOIN opponent_prior_stats ops
-           ON fps.fighter_id = ops.fighter_id
-          AND fps.current_fight_id = ops.current_fight_id
+        mine.fighter_id,
+        mine.fight_id,
+        fd.fight_date,
+        fd.duration_minutes,
+        mine.sig_landed,
+        mine.sig_attempted,
+        mine.td_landed,
+        mine.td_attempted,
+        mine.subs_attempted,
+        opp.sig_landed    AS opp_sig_landed,
+        opp.sig_attempted AS opp_sig_attempted,
+        opp.td_landed     AS opp_td_landed,
+        opp.td_attempted  AS opp_td_attempted
+    FROM fighter_fight_totals mine
+    JOIN fight_durations fd
+        ON fd.fight_id = mine.fight_id
+    -- Identify the opponent (always exactly 2 fighters per fight_id)
+    JOIN fighter_fights ff_opp
+        ON  ff_opp.fight_id   = mine.fight_id
+        AND ff_opp.fighter_id != mine.fighter_id
+    JOIN fighter_fight_totals opp
+        ON  opp.fighter_id = ff_opp.fighter_id
+        AND opp.fight_id   = mine.fight_id
+),
+
+-- For each (fighter, fight), aggregate all fights strictly before this
+-- fight's date to produce retroactive pre-fight statistics.
+-- LEFT JOIN ensures fighters entering their first fight still get a row
+-- with all NULL stats rather than being dropped.
+retroactive AS (
+    SELECT
+        cur.fighter_id,
+        cur.fight_id,
+
+        -- SLpM: significant strikes landed per minute
+        CASE WHEN SUM(h.duration_minutes) > 0
+             THEN SUM(h.sig_landed) / SUM(h.duration_minutes)
+             ELSE NULL END                                              AS slpm,
+
+        -- Str. Acc.: sig strikes landed / sig strikes attempted
+        CASE WHEN SUM(h.sig_attempted) > 0
+             THEN SUM(h.sig_landed)::NUMERIC / SUM(h.sig_attempted)
+             ELSE NULL END                                              AS str_acc,
+
+        -- SApM: significant strikes absorbed per minute (opponent's landed)
+        CASE WHEN SUM(h.duration_minutes) > 0
+             THEN SUM(h.opp_sig_landed) / SUM(h.duration_minutes)
+             ELSE NULL END                                              AS sapm,
+
+        -- Str. Def.: % of opponent's sig strikes that did NOT land
+        CASE WHEN SUM(h.opp_sig_attempted) > 0
+             THEN (SUM(h.opp_sig_attempted) - SUM(h.opp_sig_landed))::NUMERIC
+                  / SUM(h.opp_sig_attempted)
+             ELSE NULL END                                              AS str_def,
+
+        -- TD Avg.: takedowns landed per 15 minutes
+        CASE WHEN SUM(h.duration_minutes) > 0
+             THEN SUM(h.td_landed) / SUM(h.duration_minutes) * 15
+             ELSE NULL END                                              AS td_avg,
+
+        -- TD Acc.: takedowns landed / takedowns attempted
+        CASE WHEN SUM(h.td_attempted) > 0
+             THEN SUM(h.td_landed)::NUMERIC / SUM(h.td_attempted)
+             ELSE NULL END                                              AS td_acc,
+
+        -- TD Def.: % of opponent's TD attempts that did NOT land
+        CASE WHEN SUM(h.opp_td_attempted) > 0
+             THEN (SUM(h.opp_td_attempted) - SUM(h.opp_td_landed))::NUMERIC
+                  / SUM(h.opp_td_attempted)
+             ELSE NULL END                                              AS td_def,
+
+        -- Sub Avg.: submission attempts per 15 minutes
+        CASE WHEN SUM(h.duration_minutes) > 0
+             THEN SUM(h.subs_attempted) / SUM(h.duration_minutes) * 15
+             ELSE NULL END                                              AS sub_avg
+
+    FROM fighter_fights cur
+    LEFT JOIN fight_data h
+        ON  h.fighter_id = cur.fighter_id
+        AND h.fight_id   < cur.fight_id
+    GROUP BY cur.fighter_id, cur.fight_id
+),
+
+-- For each (fighter, fight), count wins/losses/draws from all prior fights.
+-- winner = 'Draw' means a draw; winner = fighter_name means a win; anything
+-- else where winner IS NOT NULL is a loss.
+-- Debut fighters get 0/0/0 (factually correct, unlike the NULL rolling stats).
+fighter_record AS (
+    SELECT
+        cur.fighter_id,
+        cur.fight_id,
+        COUNT(*) FILTER (
+            WHERE f_hist.winner = fi.fighter_name
+        )                                                               AS wins,
+        COUNT(*) FILTER (
+            WHERE f_hist.winner IS NOT NULL
+              AND f_hist.winner != 'Draw'
+              AND f_hist.winner != fi.fighter_name
+        )                                                               AS losses,
+        COUNT(*) FILTER (
+            WHERE f_hist.winner = 'Draw'
+        )                                                               AS draws
+    FROM fighter_fights cur
+    JOIN fighters fi ON fi.fighter_id = cur.fighter_id
+    LEFT JOIN fighter_fights ff_hist
+        ON  ff_hist.fighter_id = cur.fighter_id
+        AND ff_hist.fight_id   < cur.fight_id
+    LEFT JOIN fights f_hist ON f_hist.fight_id = ff_hist.fight_id
+    GROUP BY cur.fighter_id, cur.fight_id
+),
+
+-- Assign fighter labels consistently: f1 = lower fighter_id, f2 = higher
+fighter_pairs AS (
+    SELECT
+        fight_id,
+        MIN(fighter_id) AS f1_id,
+        MAX(fighter_id) AS f2_id
+    FROM fighter_fights
+    GROUP BY fight_id
 )
+
 SELECT
-    f.*,
+    -- Fight metadata
+    f.fight_id,
+    f.event_name,
+    f.fight_date,
+    f.weight_class,
+    f.title_bout,
+    f.winner,
+    f.win_method,
 
-    fa.fighter_id      AS fighter_a_id,
-    fa.fighter_name    AS fighter_a_name,
-    fa.height          AS fighter_a_height,
-    fa.weight          AS fighter_a_weight,
-    fa.reach           AS fighter_a_reach,
-    fa.stance          AS fighter_a_stance,
-    fa.dob             AS fighter_a_dob,
-    fa.wins            AS fighter_a_wins,
-    fa.losses          AS fighter_a_losses,
-    fa.draws           AS fighter_a_draws,
+    -- Fighter 1 basic info
+    fi1.fighter_id   AS f1_fighter_id,
+    fi1.fighter_name AS f1_name,
+    fi1.height       AS f1_height,
+    fi1.weight       AS f1_weight,
+    fi1.reach        AS f1_reach,
+    fi1.stance       AS f1_stance,
+    fi1.dob          AS f1_dob,
 
-    sa.slpm            AS fighter_a_slpm,
-    sa.str_acc         AS fighter_a_str_acc,
-    sa.sapm            AS fighter_a_sapm,
-    sa.str_def         AS fighter_a_str_def,
-    sa.td_avg          AS fighter_a_td_avg,
-    sa.td_acc          AS fighter_a_td_acc,
-    sa.td_def          AS fighter_a_td_def,
-    sa.sub_avg         AS fighter_a_sub_avg,
+    -- Fighter 1 pre-fight record
+    rec1.wins        AS f1_wins,
+    rec1.losses      AS f1_losses,
+    rec1.draws       AS f1_draws,
 
-    fb.fighter_id      AS fighter_b_id,
-    fb.fighter_name    AS fighter_b_name,
-    fb.height          AS fighter_b_height,
-    fb.weight          AS fighter_b_weight,
-    fb.reach           AS fighter_b_reach,
-    fb.stance          AS fighter_b_stance,
-    fb.dob             AS fighter_b_dob,
-    fb.wins            AS fighter_b_wins,
-    fb.losses          AS fighter_b_losses,
-    fb.draws           AS fighter_b_draws,
+    -- Fighter 1 pre-fight rolling stats
+    r1.slpm          AS f1_slpm,
+    r1.str_acc       AS f1_str_acc,
+    r1.sapm          AS f1_sapm,
+    r1.str_def       AS f1_str_def,
+    r1.td_avg        AS f1_td_avg,
+    r1.td_acc        AS f1_td_acc,
+    r1.td_def        AS f1_td_def,
+    r1.sub_avg       AS f1_sub_avg,
 
-    sb.slpm            AS fighter_b_slpm,
-    sb.str_acc         AS fighter_b_str_acc,
-    sb.sapm            AS fighter_b_sapm,
-    sb.str_def         AS fighter_b_str_def,
-    sb.td_avg          AS fighter_b_td_avg,
-    sb.td_acc          AS fighter_b_td_acc,
-    sb.td_def          AS fighter_b_td_def,
-    sb.sub_avg         AS fighter_b_sub_avg
+    -- Fighter 2 basic info
+    fi2.fighter_id   AS f2_fighter_id,
+    fi2.fighter_name AS f2_name,
+    fi2.height       AS f2_height,
+    fi2.weight       AS f2_weight,
+    fi2.reach        AS f2_reach,
+    fi2.stance       AS f2_stance,
+    fi2.dob          AS f2_dob,
+
+    -- Fighter 2 pre-fight record
+    rec2.wins        AS f2_wins,
+    rec2.losses      AS f2_losses,
+    rec2.draws       AS f2_draws,
+
+    -- Fighter 2 pre-fight rolling stats
+    r2.slpm          AS f2_slpm,
+    r2.str_acc       AS f2_str_acc,
+    r2.sapm          AS f2_sapm,
+    r2.str_def       AS f2_str_def,
+    r2.td_avg        AS f2_td_avg,
+    r2.td_acc        AS f2_td_acc,
+    r2.td_def        AS f2_td_def,
+    r2.sub_avg       AS f2_sub_avg
 
 FROM fights f
-JOIN fighter_fights ffa  ON f.fight_id = ffa.fight_id
-JOIN fighters fa         ON ffa.fighter_id = fa.fighter_id
-JOIN fighter_fights ffb  ON f.fight_id = ffb.fight_id
-JOIN fighters fb         ON ffb.fighter_id = fb.fighter_id
-LEFT JOIN fighter_stats sa ON sa.fighter_id = fa.fighter_id AND sa.fight_id = f.fight_id
-LEFT JOIN fighter_stats sb ON sb.fighter_id = fb.fighter_id AND sb.fight_id = f.fight_id
-WHERE fa.fighter_id < fb.fighter_id
+JOIN fighter_pairs fp ON fp.fight_id    = f.fight_id
+JOIN fighters fi1     ON fi1.fighter_id = fp.f1_id
+JOIN fighters fi2     ON fi2.fighter_id = fp.f2_id
+JOIN retroactive r1      ON r1.fighter_id   = fp.f1_id AND r1.fight_id = f.fight_id
+JOIN retroactive r2      ON r2.fighter_id   = fp.f2_id AND r2.fight_id = f.fight_id
+JOIN fighter_record rec1 ON rec1.fighter_id = fp.f1_id AND rec1.fight_id = f.fight_id
+JOIN fighter_record rec2 ON rec2.fighter_id = fp.f2_id AND rec2.fight_id = f.fight_id
 ORDER BY f.fight_date, f.fight_id;
